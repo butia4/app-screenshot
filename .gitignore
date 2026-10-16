@@ -1,0 +1,13 @@
+.venv/
+__pycache__/
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+
+.agents
+.atl
+.claude
+CLAUDE.md
+skills-lock.json
