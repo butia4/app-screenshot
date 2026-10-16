@@ -126,3 +126,13 @@ def test_undeletable_covered_frame_warns_and_continues(tmp_path):
     rec.run(tmp_path)
     assert any("could not delete" in m for m in n.messages("warn"))
     assert paths[0].exists() and not paths[1].exists()
+
+
+def test_unlistable_host_dir_warns_and_startup_completes(tmp_path):
+    n, store, arch = FakeNotifier(), FailingStorage(), ZipArchiver()
+    store.fail("list_files")
+    rec = Recovery(store, arch, ArchiveService(store, arch, n), n)
+    rec.run(tmp_path)  # must not raise
+    warns = n.messages("warn")
+    assert any("cannot scan for leftovers" in m for m in warns)
+    assert any("cannot scan for old sessions" in m for m in warns)

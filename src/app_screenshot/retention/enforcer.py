@@ -55,11 +55,13 @@ class RetentionEnforcer:
             return
         remaining = sum(size for _, size in sized)
         sizes = dict(sized)
+        failed = 0
         for path in select_for_deletion(sized, self._cap, protected):
             try:
                 self._storage.delete(path)
             except OSError as exc:
                 self._notifier.notify("warn", f"retention: could not delete {path.name}: {exc}")
+                failed += 1
                 continue
             remaining -= sizes[path]
             self._notifier.notify("info", f"retention: deleted oldest archive {path.name}")
@@ -68,9 +70,14 @@ class RetentionEnforcer:
             self._over_cap = False
         elif not self._over_cap:
             self._over_cap = True
-            self._notifier.notify(
-                "warn", "newest or just-created archives alone exceed the size cap; keeping them"
-            )
+            if failed:
+                msg = (
+                    f"retention: {failed} archive(s) could not be deleted; "
+                    f"total {remaining} bytes exceeds cap {self._cap} bytes"
+                )
+            else:
+                msg = "newest or just-created archives alone exceed the size cap; keeping them"
+            self._notifier.notify("warn", msg)
 
     def _prune(self, archive: Path) -> None:
         archives_dir = archive.parent

@@ -112,3 +112,25 @@ def test_over_cap_warning_fires_once_per_episode_and_rearms(tmp_path):
     a.write_bytes(b"x" * 200)
     enforcer.enforce()
     assert len(n.messages("warn")) == 2
+
+
+def test_over_cap_warning_names_failed_deletions(tmp_path):
+    a = make_archive(tmp_path, "2026-01-01", "session-090000", "0001.zip", 60)
+    make_archive(tmp_path, "2026-01-02", "session-090000", "0001.zip", 60)
+    store, n = FailingStorage(), FakeNotifier()
+    store.fail("delete", lambda p: p == a)
+    enforcer = RetentionEnforcer(store, n, tmp_path, 100)
+    enforcer.enforce()
+    enforcer.enforce()  # still once per episode
+    over = [m for m in n.messages("warn") if "exceeds cap" in m]
+    assert len(over) == 1 and "1 archive(s) could not be deleted" in over[0]
+    assert not any("newest or just-created" in m for m in n.messages("warn"))
+
+
+def test_over_cap_warning_names_protected_archives_without_failures(tmp_path):
+    make_archive(tmp_path, "2026-01-01", "session-090000", "0001.zip", 200)
+    n = FakeNotifier()
+    RetentionEnforcer(FsStorage(), n, tmp_path, 100).enforce()
+    warns = n.messages("warn")
+    assert len(warns) == 1 and "newest or just-created" in warns[0]
+    assert "could not be deleted" not in warns[0]

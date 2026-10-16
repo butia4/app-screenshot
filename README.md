@@ -83,7 +83,8 @@ minimum width of 4 digits and keeps counting past 9999.
   (`<root>/<host>/`), not the whole output root; other hosts' captures are never touched.
 - An archive created in the current pass (including archives made by startup recovery of
   older sessions) is never deleted by that pass's retention, even if the total stays over
-  the cap. Otherwise the oldest archives (by date/session path) go first.
+  the cap. Otherwise the oldest archives go first (ordered by date, then session, then the archive's numeric
+  sequence).
 - A suspend/resume gap is detected when the wall clock advances more than 2x the capture
   interval beyond the monotonic clock (Linux/macOS), or when waits between ticks overshoot
   by more than 2x the interval in total (Windows, where the monotonic clock keeps running).

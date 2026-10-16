@@ -19,7 +19,12 @@ class Recovery:
 
     def run(self, host_dir: Path) -> None:
         for pattern in ("*/session-*/archives/*.tmp", "*/session-*/frames/*.tmp"):
-            for leftover in self._storage.list_files(host_dir, pattern):
+            try:
+                leftovers = self._storage.list_files(host_dir, pattern)
+            except OSError as exc:
+                self._notifier.notify("warn", f"recovery: cannot scan for leftovers: {exc}")
+                continue
+            for leftover in leftovers:
                 try:
                     self._storage.delete(leftover)
                 except OSError as exc:
@@ -28,9 +33,12 @@ class Recovery:
                     )
                     continue
                 self._notifier.notify("info", f"recovery: removed leftover {leftover.name}")
-        sessions = sorted(
-            {p.parent.parent for p in self._storage.list_files(host_dir, "*/session-*/frames/*")}
-        )
+        try:
+            frames = self._storage.list_files(host_dir, "*/session-*/frames/*")
+        except OSError as exc:
+            self._notifier.notify("warn", f"recovery: cannot scan for old sessions: {exc}")
+            return
+        sessions = sorted({p.parent.parent for p in frames})
         for session in sessions:
             frames_dir, archives_dir = session / "frames", session / "archives"
             self._drop_already_archived(frames_dir, archives_dir)

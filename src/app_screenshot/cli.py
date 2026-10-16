@@ -69,24 +69,25 @@ def _run(cfg: AppConfig, notifier) -> int:
         notifier.notify("error", f"cannot initialise screen capture: {exc}")
         return EXIT_PLATFORM
 
-    from app_screenshot.archiving.recovery import Recovery
-    from app_screenshot.archiving.service import ArchiveService
-    from app_screenshot.archiving.zip_archiver import ZipArchiver
-    from app_screenshot.capture.session import CaptureSession
-    from app_screenshot.capture.signals import install_stop_handlers
-    from app_screenshot.encoding.blank import BlankFrameMonitor
-    from app_screenshot.encoding.pillow_encoder import PillowEncoder
-    from app_screenshot.retention.disk_guard import DiskGuard
-    from app_screenshot.retention.enforcer import RetentionEnforcer
-    from app_screenshot.shared.clock import SystemClock
-    from app_screenshot.shared.fs_storage import FsStorage
-    from app_screenshot.shared.layout import current_hostname
-
-    # Stop handlers go in before the banner and recovery so Ctrl+C during startup is a
-    # graceful stop (no traceback), not a KeyboardInterrupt.
-    stop = threading.Event()
-    restore = install_stop_handlers(stop, notifier)
+    restore = None
     try:
+        from app_screenshot.archiving.recovery import Recovery
+        from app_screenshot.archiving.service import ArchiveService
+        from app_screenshot.archiving.zip_archiver import ZipArchiver
+        from app_screenshot.capture.session import CaptureSession
+        from app_screenshot.capture.signals import install_stop_handlers
+        from app_screenshot.encoding.blank import BlankFrameMonitor
+        from app_screenshot.encoding.pillow_encoder import PillowEncoder
+        from app_screenshot.retention.disk_guard import DiskGuard
+        from app_screenshot.retention.enforcer import RetentionEnforcer
+        from app_screenshot.shared.clock import SystemClock
+        from app_screenshot.shared.fs_storage import FsStorage
+        from app_screenshot.shared.layout import current_hostname
+
+        # Stop handlers go in before the banner and recovery so Ctrl+C during startup is a
+        # graceful stop (no traceback), not a KeyboardInterrupt.
+        stop = threading.Event()
+        restore = install_stop_handlers(stop, notifier)
         clock, storage, archiver = SystemClock(), FsStorage(), ZipArchiver()
         layout = SessionLayout.allocate(
             cfg.output_root, current_hostname(), datetime.now(), Path.exists
@@ -122,8 +123,11 @@ def _run(cfg: AppConfig, notifier) -> int:
             failure_limit=cfg.failure_limit,
         )
         return session.run()
+    except KeyboardInterrupt:  # stop before the handlers were in place: clean exit
+        return EXIT_OK
     finally:
-        restore()
+        if restore is not None:
+            restore()
         capturer.close()
 
 
