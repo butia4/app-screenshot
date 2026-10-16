@@ -30,8 +30,10 @@ Requires Python 3.11+.
 Stop with Ctrl+C (or SIGTERM). Pending frames are archived before exit; a second signal
 exits immediately and the next start recovers any leftovers.
 
-Exit codes: 0 ok, 1 unexpected error or too many consecutive capture failures,
-2 invalid configuration, 3 unsupported platform.
+Exit codes: 0 ok, 1 unexpected error, too many consecutive capture failures, or too many
+consecutive frame save failures (encode/write; counted separately from capture failures, a
+final archive is attempted first), 2 invalid configuration, 3 unsupported platform.
+A stop requested during startup recovery skips the capture session and exits 0.
 
 ## Configuration
 
@@ -41,16 +43,30 @@ beside the executable in a frozen build) if present. Unknown keys are an error.
 
 | TOML key            | CLI flag               | Default            | Notes                              |
 |---------------------|------------------------|--------------------|------------------------------------|
-| `output_root`       | `--output`             | `~/ScreenCaptures` | `<root>/<host>/<date>/session-*`   |
-| `capture_interval`  | `--interval`           | `60`               | seconds                            |
-| `archive_interval`  | `--archive-interval`   | `1800`             | seconds, >= capture_interval       |
+| `output_root`       | `--output`             | `./ScreenCaptures` | `<root>/<host>/<date>/session-*`; relative paths resolve against the process working directory |
+| `capture_interval`  | `--interval`           | `60`               | seconds, finite, >= 1              |
+| `archive_interval`  | `--archive-interval`   | `1800`             | seconds, finite, >= 1 and >= capture_interval |
 | `max_width`         | `--max-width`          | `1920`             | no upscaling, >= 320               |
 | `quality`           | `--quality`            | `75`               | 1-100                              |
-| `max_archive_size`  | `--max-archive-size`   | `5GB`              | oldest archives deleted first      |
+| `max_archive_size`  | `--max-archive-size`   | `5GB`              | must be > 0; oldest archives deleted first |
 | `min_free_disk`     | `--min-free-disk`      | `1GB`              | capture pauses below, resumes +10% |
-| `failure_limit`     | `--failure-limit`      | `10`               | consecutive capture failures before exit 1, >= 1 |
+| `failure_limit`     | `--failure-limit`      | `10`               | consecutive capture (and, separately, save) failures before exit 1, >= 1 |
 
-Sizes accept `B`, `KB`, `MB`, `GB`, `TB` (1024-based).
+Sizes accept `B`, `KB`, `MB`, `GB`, `TB` (1024-based). Numeric values must be finite
+(`nan` and `inf` are rejected, naming the key).
+
+### Output path resolution
+
+A relative `output_root` (including the default `./ScreenCaptures`), from the CLI or from
+TOML, is resolved against the **process working directory** when the config is built. It is
+not relative to the TOML file, even when the file sits beside a frozen executable. A
+scheduler or shortcut may start the process elsewhere (Windows Task Scheduler defaults to
+`C:\Windows\System32`), so for unattended runs set an absolute `output_root` or the
+scheduler's "Start in" directory. The startup banner prints the resolved session directory.
+
+Each run uses `session-HHMMSS`; if that directory already exists (two runs starting in the
+same second), the run uses `session-HHMMSS-2`, `-3`, and so on. Archive numbering has a
+minimum width of 4 digits and keeps counting past 9999.
 
 ## Platform notes
 
@@ -68,9 +84,22 @@ Sizes accept `B`, `KB`, `MB`, `GB`, `TB` (1024-based).
 - An archive created in the current pass (including archives made by startup recovery of
   older sessions) is never deleted by that pass's retention, even if the total stays over
   the cap. Otherwise the oldest archives (by date/session path) go first.
-- A wall-clock gap is detected when the wall clock advances more than 2x the capture
-  interval beyond the monotonic clock, or more than 3x the interval in total (suspend/resume);
-  missed ticks are skipped and a warning is printed.
+- A suspend/resume gap is detected when the wall clock advances more than 2x the capture
+  interval beyond the monotonic clock (Linux/macOS), or when waits between ticks overshoot
+  by more than 2x the interval in total (Windows, where the monotonic clock keeps running).
+  Time spent in slow capture, encode or archive work does not count. Missed ticks are
+  skipped and a warning is printed.
+- Archives are ordered by numeric sequence, so `10000_` is newer than `9999_`. A file that
+  cannot be deleted or inspected (for example locked by an antivirus scanner) is reported
+  and skipped instead of stopping capture. The size-cap-exceeded warning is printed once
+  per episode and re-arms after the total drops back under the cap.
+- Known limitation: during the repeated hour of a daylight-saving fall-back, retention may
+  order two sessions started in that hour incorrectly. Within a session, frame order always
+  follows the numeric sequence in the file name, so clock steps never reorder frames.
+- Startup recovery deletes a loose frame only when its size and CRC32 match the copy in a
+  verified zip; a frame that differs is kept and archived into a new zip.
+- WebP frames wider or taller than 16383 px (the format limit) are downscaled to fit,
+  keeping the aspect ratio.
 - Blank-frame warning: after 3 consecutive uniform frames, at most once per 600 s. Frames are
   always saved regardless.
 
@@ -91,6 +120,9 @@ suite runs headless with fakes. The `mss` adapter needs a display and is validat
 
 - [ ] macOS: Screen Recording permission is attributed to the terminal / packaged app
 - [ ] Frozen build runs and the `mss` hidden imports resolve on each OS
+- [ ] Frozen build still writes WebP (`PIL.WebPImagePlugin` / `PIL._webp` hidden imports); no
+      JPEG-fallback warning at startup
+- [ ] Windows: archive fsync succeeds (descriptor opened with write access)
 - [ ] Real frame sizes versus the archive cap on a multi-monitor setup
 - [ ] WebP available in Pillow wheels per OS; JPEG fallback path works
 - [ ] Windows console close, then recovery on next start

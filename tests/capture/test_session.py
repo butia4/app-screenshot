@@ -1,6 +1,8 @@
 import threading
 from datetime import datetime
 
+import pytest
+
 from app_screenshot.archiving.service import ArchiveService
 from app_screenshot.archiving.zip_archiver import ZipArchiver
 from app_screenshot.capture.session import CaptureSession
@@ -158,3 +160,148 @@ def test_encode_failure_reported_not_fatal(tmp_path):
     _, run_for, _, notifier, _ = build(tmp_path, capturer=cap, encoder=BadEncoder(), archive=10_000)
     assert run_for(60 * 3 - 1) == 0
     assert cap.calls == 3 and len(notifier.messages("error")) == 3
+
+
+def test_archive_exception_mid_loop_still_runs_final_archive(tmp_path):
+    session, _, _, notifier, _ = build(tmp_path, archive=120)
+    calls = []
+
+    def archive(frames_dir, archives_dir):
+        calls.append(1)
+        raise RuntimeError("archive blew up")
+
+    session._archiver.archive = archive
+    with pytest.raises(RuntimeError, match="archive blew up"):
+        session.run()
+    assert len(calls) == 2  # the periodic one that crashed the loop, then the final attempt
+    assert any("final archive failed" in m for m in notifier.messages("error"))
+
+
+def test_final_archive_failure_does_not_change_exit_code(tmp_path):
+    session, run_for, _, notifier, _ = build(tmp_path, archive=10_000)
+
+    def archive(frames_dir, archives_dir):
+        raise OSError("disk gone")
+
+    session._archiver.archive = archive
+    assert run_for(60 * 2) == 0
+    assert any("final archive failed" in m for m in notifier.messages("error"))
+
+
+def test_slow_archive_work_is_not_a_gap(tmp_path):
+    session, run_for, clock, notifier, _ = build(tmp_path, interval=1, archive=2)
+    real = session._archiver.archive
+
+    def slow_archive(*a, **k):
+        clock.advance(5)  # slow work moves wall and monotonic time together
+        return real(*a, **k)
+
+    session._archiver.archive = slow_archive
+    run_for(10)
+    assert not any("gap" in m for m in notifier.messages())
+
+
+def test_suspend_with_stalled_monotonic_is_a_gap(tmp_path):
+    cap = FakeCapturer()
+    session, _, clock, notifier, _ = build(tmp_path, capturer=cap, archive=10_000)
+    state = {"n": 0}
+
+    def wait(timeout):
+        state["n"] += 1
+        if state["n"] == 1:  # monotonic paused (Linux/macOS), wall leaps
+            clock.jump_wall(3600)
+        else:
+            clock.advance(timeout)
+        return cap.calls >= 2
+
+    session._wait = wait
+    session.run()
+    assert any("gap" in m for m in notifier.messages("warn"))
+
+
+def test_suspend_with_running_monotonic_is_a_gap_via_oversleep(tmp_path):
+    cap = FakeCapturer()
+    session, _, clock, notifier, _ = build(tmp_path, capturer=cap, interval=1, archive=10_000)
+    state = {"n": 0}
+
+    def wait(timeout):
+        state["n"] += 1
+        # Windows-style: monotonic includes the suspend; wall and mono advance equally, so the
+        # wall-vs-mono rule alone cannot see it, but the wait took 3600 s instead of `timeout`.
+        clock.advance(3600 if state["n"] == 1 else timeout)
+        return cap.calls >= 2
+
+    session._wait = wait
+    session.run()
+    assert any("gap" in m for m in notifier.messages("warn"))
+
+
+def test_backward_wall_step_is_not_a_gap(tmp_path):
+    session, _, clock, notifier, _ = build(tmp_path, archive=10_000)
+    state = {"n": 0}
+
+    def wait(timeout):
+        state["n"] += 1
+        clock.advance(timeout)
+        if state["n"] == 1:
+            clock.jump_wall(-3600)
+        return state["n"] >= 5
+
+    session._wait = wait
+    session.run()
+    assert not any("gap" in m for m in notifier.messages())
+
+
+def test_save_failures_exit_nonzero_after_final_archive(tmp_path):
+    class BadEncoder(FakeEncoder):
+        def encode(self, frame):
+            raise RuntimeError("boom")
+
+    session, run_for, *_ = build(tmp_path, encoder=BadEncoder(), failure_limit=3, archive=10_000)
+    archived = []
+    real = session._archiver.archive
+    session._archiver.archive = lambda *a, **k: (archived.append(1), real(*a, **k))[1]
+    assert run_for(60 * 100) == 1
+    assert archived  # the final archive ran before exiting
+
+
+def test_save_failure_counter_resets_on_success(tmp_path):
+    class FlakyEncoder(FakeEncoder):
+        def encode(self, frame):
+            if self.encoded in (0, 1, 3, 4):  # fail, fail, ok, fail, fail, ok ...
+                self.encoded += 1
+                raise RuntimeError("boom")
+            return super().encode(frame)
+
+    cap = FakeCapturer()
+    _, run_for, *_ = build(
+        tmp_path, capturer=cap, encoder=FlakyEncoder(), failure_limit=3, archive=10_000
+    )
+    assert run_for(60 * 6 - 1) == 0
+    assert cap.calls == 6
+
+
+def test_grab_and_save_failure_counters_are_independent(tmp_path):
+    class Alternating(FakeCapturer):
+        def grab(self):
+            n = self.calls + 1  # FakeCapturer.grab counts the call itself
+            if n in (1, 3):
+                self.calls = n
+                raise RuntimeError("grab failed")
+            return super().grab()
+
+    class SaveFailsOnEven(FakeEncoder):
+        def encode(self, frame):
+            self.encoded += 1
+            if self.encoded in (1, 2):
+                raise RuntimeError("boom")
+            return b"ok"
+
+    cap = Alternating()
+    # ticks: 1 grab-fail, 2 save-fail, 3 grab-fail, 4 save-fail, 5 ok
+    # (encode runs only after a successful grab: calls 2 and 4 are the save failures)
+    _, run_for, *_ = build(
+        tmp_path, capturer=cap, encoder=SaveFailsOnEven(), failure_limit=3, archive=10_000
+    )
+    assert run_for(60 * 5 - 1) == 0
+    assert cap.calls == 5

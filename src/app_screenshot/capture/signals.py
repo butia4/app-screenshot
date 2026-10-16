@@ -31,6 +31,7 @@ def install_stop_handlers(stop: threading.Event, notifier: Notifier) -> Callable
 
     def restore() -> None:
         for sig, old in previous.items():
-            signal.signal(sig, old)
+            # getsignal returns None for a handler installed outside Python: use the default
+            signal.signal(sig, signal.SIG_DFL if old is None else old)
 
     return restore

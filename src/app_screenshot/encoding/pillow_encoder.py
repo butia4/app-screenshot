@@ -7,6 +7,8 @@ from PIL import Image, ImageStat, features
 from app_screenshot.encoding.ports import RawFrame
 from app_screenshot.shared.notifier import Notifier
 
+WEBP_MAX_SIDE = 16383  # hard limit of the WebP format
+
 
 class PillowEncoder:
     def __init__(self, max_width: int, quality: int, notifier: Notifier) -> None:
@@ -34,6 +36,14 @@ class PillowEncoder:
             img = img.resize((self._max_width, height), Image.Resampling.LANCZOS)
         buf = io.BytesIO()
         if self.fmt == "webp":
+            longest = max(img.size)
+            if longest > WEBP_MAX_SIDE:  # keep WebP (one extension per session), keep aspect
+                scale = WEBP_MAX_SIDE / longest
+                size = (max(1, int(img.width * scale)), max(1, int(img.height * scale)))
+                img = img.resize(
+                    (min(size[0], WEBP_MAX_SIDE), min(size[1], WEBP_MAX_SIDE)),
+                    Image.Resampling.LANCZOS,
+                )
             img.save(buf, "WEBP", quality=self._quality, method=4)
         else:
             img.save(buf, "JPEG", quality=self._quality)

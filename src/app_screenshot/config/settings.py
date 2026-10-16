@@ -1,8 +1,9 @@
 """Effective configuration: defaults, size parsing and validation."""
 
+import math
 import re
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -16,7 +17,8 @@ class ConfigError(ValueError):
 
 @dataclass(frozen=True)
 class AppConfig:
-    output_root: Path = Path.home() / "ScreenCaptures"
+    # Relative to the process working directory, resolved when the config is built.
+    output_root: Path = field(default_factory=lambda: Path.cwd() / "ScreenCaptures")
     capture_interval: float = 60.0
     archive_interval: float = 1800.0
     max_width: int = 1920
@@ -28,6 +30,7 @@ class AppConfig:
 
 KEYS = tuple(AppConfig.__dataclass_fields__)
 MIN_WIDTH = 320
+MIN_INTERVAL_S = 1.0  # frame names have 1-second resolution
 
 
 def parse_size(key: str, value: Any) -> int:
@@ -50,7 +53,10 @@ def parse_size(key: str, value: Any) -> int:
 def _number(key: str, value: Any) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise ConfigError(f"{key}: expected a number")
-    return float(value)
+    number = float(value)
+    if not math.isfinite(number):
+        raise ConfigError(f"{key}: must be a finite number")
+    return number
 
 
 def _integer(key: str, value: Any) -> int:
@@ -70,7 +76,7 @@ def build_config(values: Mapping[str, Any]) -> AppConfig:
         if key == "output_root":
             if not isinstance(raw, (str, Path)):
                 raise ConfigError("output_root: expected a path string")
-            out[key] = Path(raw).expanduser()
+            out[key] = Path(raw).expanduser().absolute()
         elif key in ("capture_interval", "archive_interval"):
             out[key] = _number(key, raw)
         elif key in ("max_width", "quality", "failure_limit"):
@@ -83,10 +89,10 @@ def build_config(values: Mapping[str, Any]) -> AppConfig:
 
 
 def _validate(cfg: AppConfig) -> None:
-    if cfg.capture_interval <= 0:
-        raise ConfigError("capture_interval: must be > 0 seconds")
-    if cfg.archive_interval <= 0:
-        raise ConfigError("archive_interval: must be > 0 seconds")
+    if cfg.capture_interval < MIN_INTERVAL_S:
+        raise ConfigError(f"capture_interval: must be >= {MIN_INTERVAL_S:g} second")
+    if cfg.archive_interval < MIN_INTERVAL_S:
+        raise ConfigError(f"archive_interval: must be >= {MIN_INTERVAL_S:g} second")
     if cfg.archive_interval < cfg.capture_interval:
         raise ConfigError("archive_interval: must be >= capture_interval")
     if not 1 <= cfg.quality <= 100:

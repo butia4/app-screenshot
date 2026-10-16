@@ -1,4 +1,9 @@
+from app_screenshot.archiving.service import ArchiveService
+from app_screenshot.archiving.zip_archiver import ZipArchiver
+from app_screenshot.shared.fs_storage import FsStorage
 from tests.archiving.conftest import make_frames
+from tests.fakes.notifier import FakeNotifier
+from tests.fakes.storage import FailingStorage
 
 
 def test_archives_verifies_and_deletes_originals(env):
@@ -56,3 +61,84 @@ def test_build_error_keeps_frames(env, monkeypatch):
     assert service.archive(frames, archives) is None
     assert all(p.exists() for p in paths)
     assert not list(archives.glob("*.tmp"))
+
+
+def test_tmp_delete_failure_never_masks_the_original_error(tmp_path):
+    frames, archives = tmp_path / "frames", tmp_path / "archives"
+    store, notifier = FailingStorage(), FakeNotifier()
+    store.fail("delete", lambda p: p.name.endswith(".tmp"))
+    service = ArchiveService(store, ZipArchiver(), notifier)
+    service._archiver.verify = lambda *a, **k: False
+    paths = make_frames(frames, 2)
+    assert service.archive(frames, archives) is None
+    assert all(p.exists() for p in paths)
+    errors, warns = notifier.messages("error"), notifier.messages("warn")
+    assert errors and "verification failed" in errors[0]
+    assert warns and ".tmp" in warns[0]
+
+
+def test_size_error_follows_the_keep_and_retry_path(tmp_path):
+    frames, archives = tmp_path / "frames", tmp_path / "archives"
+    store, notifier = FailingStorage(), FakeNotifier()
+    store.fail("size", lambda p: p.suffix == ".webp")
+    service = ArchiveService(store, ZipArchiver(), notifier)
+    paths = make_frames(frames, 2)
+    assert service.archive(frames, archives) is None
+    assert all(p.exists() for p in paths) and notifier.messages("error")
+
+
+def test_list_frames_oserror_warns_and_returns_none(tmp_path):
+    store, notifier = FailingStorage(), FakeNotifier()
+    store.fail("list_files")
+    service = ArchiveService(store, ZipArchiver(), notifier)
+    assert service.archive(tmp_path / "frames", tmp_path / "archives") is None
+    assert notifier.messages("warn")
+
+
+def test_after_archive_oserror_warns_and_still_returns_final(tmp_path):
+    frames, archives = tmp_path / "frames", tmp_path / "archives"
+    notifier = FakeNotifier()
+
+    def hook(_):
+        raise PermissionError("locked")
+
+    service = ArchiveService(FsStorage(), ZipArchiver(), notifier, after_archive=hook)
+    make_frames(frames, 2)
+    final = service.archive(frames, archives)
+    assert final is not None and final.exists()
+    assert any("locked" in m for m in notifier.messages("warn"))
+
+
+def test_sequence_continues_past_9999(env):
+    frames, archives, service, *_ = env
+    archives.mkdir()
+    (archives / "9999_090000-090000.zip").write_bytes(b"x")
+    (archives / "10000_090000-090000.zip").write_bytes(b"x")
+    make_frames(frames, 1)
+    final = service.archive(frames, archives)
+    assert final.name.startswith("10001_")
+
+
+def test_frames_dir_removed_after_successful_archive(env):
+    frames, archives, service, *_ = env
+    make_frames(frames, 2)
+    assert service.archive(frames, archives) is not None
+    assert not frames.exists()
+
+
+def test_backward_timestamps_zip_in_sequence_order(env):
+    frames, archives, service, *_ = env
+    # wall clock stepped back 1 h between frames 2 and 3: text order differs from sequence
+    for name in (
+        "20260101T100000-00001.webp",
+        "20260101T100100-00002.webp",
+        "20260101T090000-00003.webp",
+    ):
+        (frames / name).write_bytes(b"x" + name.encode())
+    final = service.archive(frames, archives)
+    assert final.name == "0001_100000-090000.zip"
+    assert list(ZipArchiver().read_index(final)) == [
+        "20260101T100000-00001.webp",
+        "20260101T100100-00002.webp",
+        "20260101T090000-00003.webp",
+    ]

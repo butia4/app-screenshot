@@ -4,7 +4,7 @@ from collections.abc import Collection
 from pathlib import Path
 
 from app_screenshot.retention.policy import select_for_deletion
-from app_screenshot.shared.layout import ARCHIVE_PATTERN
+from app_screenshot.shared.layout import ARCHIVE_PATTERN, archive_sort_key
 from app_screenshot.shared.notifier import Notifier
 from app_screenshot.shared.storage import Storage
 
@@ -19,6 +19,7 @@ class RetentionEnforcer:
         self._host_dir = host_dir
         self._cap = cap
         self._startup: list[Path] | None = None
+        self._over_cap = False  # an over-cap warning is already out for this episode
 
     def begin_startup(self) -> None:
         """Start of startup recovery: every archive produced until `end_startup` is protected."""
@@ -37,18 +38,36 @@ class RetentionEnforcer:
             self.enforce([created])
 
     def enforce(self, protected: Collection[Path] = ()) -> None:
-        archives = self._storage.list_files(self._host_dir, _ARCHIVES_GLOB)
-        sized = [(p, self._storage.size(p)) for p in archives]
+        """Best effort: an OSError on a single file is reported and skipped, never fatal."""
+        try:
+            archives = self._storage.list_files(self._host_dir, _ARCHIVES_GLOB)
+        except OSError as exc:
+            self._notifier.notify("warn", f"retention: cannot list archives: {exc}")
+            return
+        sized: list[tuple[Path, int]] = []
+        for path in sorted(archives, key=archive_sort_key):
+            try:
+                sized.append((path, self._storage.size(path)))
+            except OSError as exc:
+                self._notifier.notify("warn", f"retention: cannot read size of {path.name}: {exc}")
         if not sized:
+            self._over_cap = False
             return
         remaining = sum(size for _, size in sized)
         sizes = dict(sized)
         for path in select_for_deletion(sized, self._cap, protected):
-            self._storage.delete(path)
+            try:
+                self._storage.delete(path)
+            except OSError as exc:
+                self._notifier.notify("warn", f"retention: could not delete {path.name}: {exc}")
+                continue
             remaining -= sizes[path]
             self._notifier.notify("info", f"retention: deleted oldest archive {path.name}")
             self._prune(path)
-        if remaining > self._cap:
+        if remaining <= self._cap:
+            self._over_cap = False
+        elif not self._over_cap:
+            self._over_cap = True
             self._notifier.notify(
                 "warn", "newest or just-created archives alone exceed the size cap; keeping them"
             )

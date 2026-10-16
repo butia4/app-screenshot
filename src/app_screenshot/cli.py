@@ -4,6 +4,7 @@ import os
 import sys
 import threading
 from datetime import datetime
+from pathlib import Path
 
 from app_screenshot.config.loader import load_config
 from app_screenshot.config.settings import AppConfig, ConfigError
@@ -81,38 +82,45 @@ def _run(cfg: AppConfig, notifier) -> int:
     from app_screenshot.shared.fs_storage import FsStorage
     from app_screenshot.shared.layout import current_hostname
 
-    clock, storage, archiver = SystemClock(), FsStorage(), ZipArchiver()
-    layout = SessionLayout(cfg.output_root, current_hostname(), datetime.now())
-    encoder = PillowEncoder(cfg.max_width, cfg.quality, notifier)
-    enforcer = RetentionEnforcer(storage, notifier, layout.host_dir, cfg.max_archive_size)
-    service = ArchiveService(storage, archiver, notifier, after_archive=enforcer.on_archive)
-
-    print(format_banner(cfg, layout, encoder.fmt), flush=True)
-
-    enforcer.begin_startup()
-    try:
-        Recovery(storage, archiver, service, notifier).run(layout.host_dir)
-    finally:
-        enforcer.end_startup()
-
+    # Stop handlers go in before the banner and recovery so Ctrl+C during startup is a
+    # graceful stop (no traceback), not a KeyboardInterrupt.
     stop = threading.Event()
     restore = install_stop_handlers(stop, notifier)
-    session = CaptureSession(
-        clock=clock,
-        capturer=capturer,
-        encoder=encoder,
-        storage=storage,
-        notifier=notifier,
-        guard=DiskGuard(storage, notifier, cfg.output_root, cfg.min_free_disk),
-        blank=BlankFrameMonitor(notifier, clock),
-        archiver=service,
-        layout=layout,
-        capture_interval=cfg.capture_interval,
-        archive_interval=cfg.archive_interval,
-        wait=stop.wait,
-        failure_limit=cfg.failure_limit,
-    )
     try:
+        clock, storage, archiver = SystemClock(), FsStorage(), ZipArchiver()
+        layout = SessionLayout.allocate(
+            cfg.output_root, current_hostname(), datetime.now(), Path.exists
+        )
+        encoder = PillowEncoder(cfg.max_width, cfg.quality, notifier)
+        enforcer = RetentionEnforcer(storage, notifier, layout.host_dir, cfg.max_archive_size)
+        service = ArchiveService(storage, archiver, notifier, after_archive=enforcer.on_archive)
+
+        print(format_banner(cfg, layout, encoder.fmt), flush=True)
+
+        enforcer.begin_startup()
+        try:
+            Recovery(storage, archiver, service, notifier).run(layout.host_dir)
+        finally:
+            enforcer.end_startup()
+
+        if stop.is_set():  # stop requested during startup: nothing to capture
+            return EXIT_OK
+
+        session = CaptureSession(
+            clock=clock,
+            capturer=capturer,
+            encoder=encoder,
+            storage=storage,
+            notifier=notifier,
+            guard=DiskGuard(storage, notifier, cfg.output_root, cfg.min_free_disk),
+            blank=BlankFrameMonitor(notifier, clock),
+            archiver=service,
+            layout=layout,
+            capture_interval=cfg.capture_interval,
+            archive_interval=cfg.archive_interval,
+            wait=stop.wait,
+            failure_limit=cfg.failure_limit,
+        )
         return session.run()
     finally:
         restore()

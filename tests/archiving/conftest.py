@@ -17,6 +17,7 @@ def env(tmp_path):
 
 
 def make_frames(frames_dir, n, start=0):
+    frames_dir.mkdir(parents=True, exist_ok=True)
     paths = []
     for i in range(start, start + n):
         p = frames_dir / f"20260101T09{i:02d}00-{i:05d}.webp"

@@ -48,3 +48,18 @@ def test_luma_stddev_uniform_vs_noisy():
     assert enc.luma_stddev(frame(200, 200)) < 2.0
     half = bytes([0, 0, 0]) * 20000 + bytes([255, 255, 255]) * 20000
     assert enc.luma_stddev(RawFrame(200, 200, half)) > 50
+
+
+@pytest.mark.skipif(not features.check("webp"), reason="webp unavailable")
+def test_webp_wider_than_format_limit_is_downscaled_and_stays_webp():
+    enc = PillowEncoder(20000, 75, FakeNotifier())
+    img = decode(enc.encode(frame(20000, 100)))
+    assert img.format == "WEBP"
+    assert max(img.size) <= 16383
+    assert img.width == 16383 and abs(img.height - 100 * 16383 / 20000) <= 1
+
+
+@pytest.mark.skipif(not features.check("webp"), reason="webp unavailable")
+def test_webp_within_limits_is_unchanged():
+    enc = PillowEncoder(20000, 75, FakeNotifier())
+    assert decode(enc.encode(frame(16383, 50))).size == (16383, 50)

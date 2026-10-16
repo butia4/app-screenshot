@@ -2,7 +2,8 @@
 # Build from the repository root:  pyinstaller packaging/app-screenshot.spec
 from PyInstaller.utils.hooks import collect_submodules
 
-hiddenimports = collect_submodules("mss")
+# Pillow loads its WebP plugin dynamically; list it so frozen builds keep WebP support.
+hiddenimports = collect_submodules("mss") + ["PIL.WebPImagePlugin", "PIL._webp"]
 
 a = Analysis(
     ["../src/app_screenshot/__main__.py"],

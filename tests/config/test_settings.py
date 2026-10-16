@@ -1,5 +1,6 @@
 import pytest
 
+from app_screenshot.config.loader import load_config
 from app_screenshot.config.settings import GIB, ConfigError, build_config, parse_size
 
 
@@ -59,3 +60,46 @@ def test_failure_limit_default_and_validation():
     assert build_config({"failure_limit": 3}).failure_limit == 3
     with pytest.raises(ConfigError, match="failure_limit"):
         build_config({"failure_limit": 0})
+
+
+def test_output_root_defaults_to_working_directory(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    assert build_config({}).output_root == tmp_path / "ScreenCaptures"
+
+
+def test_relative_output_root_resolves_against_working_directory(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    assert build_config({"output_root": "caps"}).output_root == tmp_path / "caps"
+
+
+@pytest.mark.parametrize("key", ["capture_interval", "archive_interval"])
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
+def test_non_finite_numbers_are_rejected(key, bad):
+    with pytest.raises(ConfigError, match=f"{key}.*finite"):
+        build_config({key: bad})
+
+
+@pytest.mark.parametrize("literal", ["nan", "inf", "-inf"])
+def test_non_finite_toml_values_are_rejected(tmp_path, literal):
+    toml = tmp_path / "c.toml"
+    toml.write_text(f"capture_interval = {literal}\n")
+    with pytest.raises(ConfigError, match="capture_interval"):
+        load_config(["--config", str(toml)])
+
+
+def test_non_finite_cli_interval_is_rejected():
+    with pytest.raises(ConfigError, match="capture_interval"):
+        load_config(["--interval", "nan"])
+
+
+@pytest.mark.parametrize("key", ["capture_interval", "archive_interval"])
+def test_interval_floor_is_one_second(key):
+    with pytest.raises(ConfigError, match=key):
+        build_config({key: 0.5})
+    cfg = build_config({"capture_interval": 1.0, "archive_interval": 1.0})
+    assert getattr(cfg, key) == 1.0
+
+
+def test_zero_max_archive_size_is_rejected():
+    with pytest.raises(ConfigError, match="max_archive_size"):
+        build_config({"max_archive_size": 0})

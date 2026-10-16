@@ -17,3 +17,10 @@ class Archiver(Protocol):
     def read_index(self, path: Path) -> dict[str, int]:
         """Member name -> size of an existing archive. Raises on a corrupt archive."""
         ...
+
+    def matching(self, zip_path: Path, loose: Mapping[str, Path]) -> set[str]:
+        """Names in `loose` whose size and CRC32 equal the same-named member of the archive.
+
+        Returns an empty set when the archive is unreadable or corrupt.
+        """
+        ...
